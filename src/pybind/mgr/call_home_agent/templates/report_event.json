@@ -1,0 +1,22 @@
+{
+  "header": {
+    "event_id": "IBM_event_RedHatMarine_ceph_{{ event.ceph_cluster_id }}_{{ event.event_time_ms }}_{{ event.event_type }}_event",
+    "event_time": "{{ event.event_time }}",
+    "event_time_ms": {{ event.event_time_ms }},
+    "event_type": "{{ event.type }}",
+    "local_event_time": "{{ event.local_event_time }}"
+  },
+  "body": {
+    "component": "Ceph",
+    "event_transaction_id": "IBM_event_RedHatMarine_ceph_{{ event.ceph_cluster_id }}_{event.event_time_ms}_{event.event_type}_event",
+    "context": {
+      "origin": 2,
+      "timestamp": {{ event.event_time_ms }},
+      "transid": {{ event.event_time_ms }}
+    },
+    "description": "{{ event.description}}",
+    "payload": {
+      "content": "{{ event.content }}"
+    }
+  }
+}

@@ -1,110 +1,109 @@
 """
-IBM Ceph Call Home Agent
+Ceph Call Home Agent
 """
 
 from typing import List, Any, Tuple, Dict, Optional, Set, Callable
-from datetime import datetime
+import time
 import json
 import requests
 import asyncio
 import os
+from jinja2 import Environment, PackageLoader
 
 from mgr_module import Option, CLIReadCommand, MgrModule, HandleCommandResult, NotifyType
-
-from .config import get_settings
-from .options import CHES_ENDPOINT, INTERVAL_INVENTORY_REPORT_MINUTES, INTERVAL_PERFORMANCE_REPORT_MINUTES
-
-# Module with the functions to be used in telemetry and in CCHA for retrieving information from the ceph cluster
-from .dataCollectors import inventory
-
-reports_header = {
-    "agent": "RedHat_Marina_firmware_agent",
-    "api_key": "",
-    "private_key": "",
-    "target_space": "dev",
-    "asset": "ceph",
-    "asset_id": "",
-    "asset_type": "RedHatMarine",
-    "asset_vendor": "IBM",
-    "asset_virtual_id": "",
-    "country_code": "",
-    "event_id": "",
-    "event_time": "",
-    "event_time_ms": 0,
-    "local_event_time": "",
-    "software_level": {
-        "name": "ceph_software",
-        "vrmf": "8.3.0.1"
-    },
-    "type": "eccnext_apisv1s",
-    "version": "1.0.0.1",
-    "analytics_event_source_type": "asset_event",
-    "analytics_type": "ceph",
-    "analytics_instance": "",
-    "analytics_virtual_id": "",
-    "analytics_group": "Storage",
-    "analytics_category": "RedHatMarine",
-    "events": []
-}
-
-# TODO: report functions providing the json paylod should be imported from the data collectors module
+from .options import CHES_ENDPOINT, INTERVAL_INVENTORY_REPORT_SECONDS, INTERVAL_PERFORMANCE_REPORT_SECONDS
+from .dataClasses import ReportHeader, ReportEvent
 
 
-def report_inventory() -> str:
+class SendError(Exception):
+    pass
+
+
+def inventory() -> str:
+    """<
+    Produce the content for the inventory report
+
+    Returns a string with a json structure with the ceph cluster inventory information
     """
-    Produce the inventory report
+    return "{'inventory': {}}"
+
+
+def performance() -> str:
     """
-    dt = datetime.timestamp(datetime.now())
-    # Set timestamps
-    reports_header['event_time'] = datetime.fromtimestamp(dt).strftime("%Y-%m-%d %H:%M:%S")
-    reports_header['event_time_ms'] = str(int(dt))
-    reports_header['local_event_time'] = datetime.fromtimestamp(dt).strftime("%a %b %d %H:%M:%S %Z")
+    Produce the content for the performance report
 
-    # Set event id
-    reports_header['event_id'] = "IBM_chc_event_RedHatMarine_ceph_{}_daily_report_{}".format(
-                                            reports_header['asset_virtual_id'],
-                                            reports_header['event_time_ms'])
-
-    # return json.dumps({**reports_header, **inventory()}) <---- TODO ADD INVENTORY (from datacollector) as event
-    return json.dumps(reports_header)
-
-
-def report_performance() -> str:
+    Returns a string with a json structure with the ceph cluster performance information
     """
-    TODO: temporally uses inventory report
-    """
-    return report_inventory()
+    return "{'performance': {}}"
 
+
+def last_contact() -> str:
+    """
+    Produce the content for the last_contact report
+
+    Returns a string with just the tiomestamp of the last contact with the cluster
+    """
+    return "{'last_contact': %s }" % format(int(time.time()))
 
 class Report:
-    def __init__(self, name: str, fn: Callable[[], str], url: str, minutes_interval: int):
-        self.name = name                       # name of the report
+    def __init__(self, report_type: str, description: str, fn: Callable[[], str], url: str, seconds_interval: int,
+                 mgr_module: Any):
+        self.report_type = report_type                       # name of the report
         self.fn = fn                           # function used to retrieve the data
         self.url = url                         # url to send the report
-        self.interval = minutes_interval * 60  # interval to send the report (seconds)
+        self.interval = seconds_interval       # interval to send the report (seconds)
+        self.mgr = mgr_module
+        self.templates_environment = Environment(loader=PackageLoader('call_home_agent', package_path='templates'))
+        self.description = description
+        self.last_id = ''
 
-    def print(self) -> str:
-        if reports_header['private_key'] and reports_header['api_key']:
-            return self.fn()
+        # Last upload settings
+        self.last_upload_option_name = 'report_%s_last_upload' % self.report_type
+        last_upload = self.mgr.get_store(self.last_upload_option_name, None)
+        if last_upload is None:
+            self.last_upload = str(int(time.time()) - self.interval + 1)
         else:
-            raise Exception('Not able to print <%s> report. Identification keys are not available' % self.name)
+            self.last_upload = str(int(last_upload))
 
-    def send(self) -> str:
-        fail_reason = ""
+    def __str__(self) -> str:
+        try:
+            template = self.templates_environment.get_template('report_header.json')
+
+            the_header = ReportHeader(self.report_type, self.mgr.get('mon_map')['fsid'], self.mgr.version)
+            report = json.loads(template.render(header=the_header.__dict__))
+
+            template = self.templates_environment.get_template('report_event.json')
+            event_section = json.loads(template.render(event=ReportEvent(self.report_type,
+                                                                         self.mgr.get('mon_map')['fsid'],
+                                                                         self.description,
+                                                                         self.fn).__dict__))
+            report['events'].append(event_section)
+            self.last_id = str(the_header.event_time_ms)
+
+            return json.dumps(report)
+        except Exception as ex:
+            raise Exception('<%s> report not available: %s\n%s' % (self.report_type, ex, report))
+
+    def send(self, force: bool = False) -> None:
+        # Do not send report if the required interval is not reached
+        if not force:
+            if (int(time.time()) - int(self.last_upload)) < self.interval:
+                self.mgr.log.info('%s report not sent because interval not reached', self.report_type)
+                return
         resp = None
-        if reports_header['private_key'] and reports_header['api_key']:
-            try:
-                resp = requests.post(url=self.url,
-                                     headers={'accept': 'application/json', 'content-type': 'application/json'},
-                                     data=self.fn())
-                resp.raise_for_status()
-            except Exception as e:
-                explanation = resp.content if resp else ''
-                fail_reason = 'Failed to send <%s> to <%s>: %s \n%s' % (self.name, self.url, str(e), explanation)
-        else:
-            fail_reason = 'Not able to send <%s> report. Identification keys are not available' % self.name
-        return fail_reason
-
+        try:
+            self.mgr.log.info('Sending <%s> report to <%s>', self.report_type, self.url)
+            resp = requests.post(url=self.url,
+                                 headers={'accept': 'application/json', 'content-type': 'application/json'},
+                                 data=str(self))
+            resp.raise_for_status()
+            self.last_upload = str(int(time.time()))
+            self.mgr.set_store(self.last_upload_option_name, self.last_upload)
+            self.mgr.health_checks.pop('CHA_ERROR_SENDING_REPORT', None)
+            self.mgr.log.info('Successfully sent <%s> report(%s) to <%s>', self.report_type, self.last_id, self.url)
+        except Exception as e:
+            explanation = "\n{}".format(resp.content) if resp else ''
+            raise SendError('Failed to send <%s> to <%s>: %s %s' % (self.report_type, self.url, str(e), explanation))
 
 class CallHomeAgent(MgrModule):
     MODULE_OPTIONS: List[Option] = [
@@ -117,13 +116,17 @@ class CallHomeAgent(MgrModule):
         Option(
             name='interval_inventory_report_minutes',
             type='int',
-            default=INTERVAL_INVENTORY_REPORT_MINUTES,
+            min=0,
+            max=10080,  # One week
+            default=INTERVAL_INVENTORY_REPORT_SECONDS,
             desc='Time frequency for the inventory report'
         ),
         Option(
             name='interval_performance_report_minutes',
             type='int',
-            default=INTERVAL_PERFORMANCE_REPORT_MINUTES,
+            min=0,
+            max=10080,  # One week
+            default=INTERVAL_PERFORMANCE_REPORT_SECONDS,
             desc='Time frequency for the performance report'
         ),
         Option(
@@ -149,57 +152,60 @@ class CallHomeAgent(MgrModule):
         # Init module options
         # Env vars (if they exist) have preference over module options
         self.ches_url = str(os.environ.get('CHA_CHES_ENDPOINT', self.get_module_option('ches_endpoint')))
-        self.interval_performance_minutes = int(
-            os.environ.get('CHA_INTERVAL_INVENTORY_REPORT_MINUTES',
+        self.interval_performance_seconds = int(
+            os.environ.get('CHA_INTERVAL_INVENTORY_REPORT_SECONDS',
                            self.get_module_option('interval_inventory_report_minutes')))  # type: ignore
-        self.interval_inventory_minutes = int(
-            os.environ.get('CHA_INTERVAL_PERFORMANCE_REPORT_MINUTES',
+        self.interval_inventory_seconds = int(
+            os.environ.get('CHA_INTERVAL_PERFORMANCE_REPORT_SECONDS',
                            self.get_module_option('interval_performance_report_minutes')))  # type: ignore
         self.customer_email = os.environ.get('CHA_CUSTOMER_EMAIL', self.get_module_option('customer_email'))
         self.country_code = os.environ.get('CHA_COUNTRY_CODE', self.get_module_option('country_code'))
         # Health checks
         self.health_checks: Dict[str, Dict[str, Any]] = dict()
 
-        # configure common report headers
-        self._configure_headers()
-
         # Prepare reports
-        self.reports = {'inventory': Report('inventory', report_inventory,
+        self.reports = {'inventory': Report('inventory',
+                                            'Ceph cluster composition',
+                                            inventory,
                                             self.ches_url,
-                                            self.interval_performance_minutes),
-                        'performance': Report('performance', report_performance,
+                                            self.interval_performance_seconds,
+                                            self),
+                        'performance': Report('performance',
+                                              'Ceph cluster performance',
+                                              performance,
                                               self.ches_url,
-                                              self.interval_inventory_minutes)
+                                              self.interval_inventory_seconds,
+                                              self),
+                        'last_contact': Report('last_contact',
+                                               'Last contact timestamps with this ceph cluster',
+                                               last_contact,
+                                               self.ches_url,
+                                               1800,
+                                               self)
                         }
 
-    async def report_task(self, rpt: Report) -> None:
+    async def report_task(self, report: Report) -> None:
         """
             Coroutine for sending the report passed as parameter
         """
-        self.log.info('Launched task for <%s> report each %s seconds)' % (rpt.name, rpt.interval))
+        self.log.info('Launched task for <%s> report each %s seconds)', report.report_type, report.interval)
         while self.run:
             try:
-                self.log.info('Sending <%s> report to <%s>' % (rpt.name, rpt.url))
-                send_error = rpt.send()
+                report.send()
             except Exception as ex:
                 send_error = str(ex)
-
-            if send_error:
                 self.log.error(send_error)
                 self.health_checks.update({
-                    'CCHA_ERROR_SENDING_REPORT': {
+                    'CHA_ERROR_SENDING_REPORT': {
                         'severity': 'error',
-                        'summary': 'Ceph Call Home Agent manager module: error sending <%s> report to IBM Storage '
-                                   'Insights systems' % rpt.name,
+                        'summary': 'Ceph Call Home Agent manager module: error sending {} report to '
+                                   'endpoint {}'.format(self.ches_url, report.report_type),
                         'detail': [send_error]
                     }
                 })
-            else:
-                self.health_checks = {}
-                self.log.info('Successfully sent <%s> report to <%s>' % (rpt.name, rpt.url))
 
             self.set_health_checks(self.health_checks)
-            await asyncio.sleep(rpt.interval)
+            await asyncio.sleep(report.interval)
 
     def launch_coroutines(self) -> None:
         """
@@ -207,116 +213,52 @@ class CallHomeAgent(MgrModule):
         """
         loop = asyncio.new_event_loop()  # type: ignore
         try:
-            for rptName, rpt in self.reports.items():
-                t = loop.create_task(self.report_task(rpt))
+            for report_name, report in self.reports.items():
+                t = loop.create_task(self.report_task(report))
             loop.run_forever()
         except Exception as ex:
-            self.log.error(ex)
+            self.log.exception(str(ex))
 
     def serve(self) -> None:
         """
-            TODO:
-            - Register instance in CHES???: TODO
-            - Launch ccha web server: TODO
-            - Launch coroutines report tasks
+            - Launch coroutines for report tasks
         """
-        self.log.info('Starting IBM Ceph Call Home Agent')
+        self.log.info('Starting Ceph Call Home Agent')
 
         # Launch coroutines for the reports
         self.launch_coroutines()
 
-        self.log.info('IBM Call home agent finished')
+        self.log.info('Call home agent finished')
 
     def shutdown(self) -> None:
         """
         This method is called by the mgr when the module needs to shut
         down (i.e., when the serve() function needs to exit).
         """
-        self.log.info('Stopping IBM Ceph Call Home Agent')
+        self.log.info('Stopping Ceph Call Home Agent')
         self.run = False
 
-    def notify(self, notify_type: NotifyType, tag: str) -> None:
-        """
-            TODO:
-            Way to detect changes in
-            osd_map, mon_map, fs_map, mon_status, health, pg_summary, command, service_map
-            Generate an "inventory change report" and send to CHES changes endpoint
-        """
-        pass
-
-    def config_notify(self) -> None:
-        """
-        This method is called whenever one of our config options is changed.
-        """
-        # This is some boilerplate that stores MODULE_OPTIONS in a class
-        # member, so that, for instance, the 'emphatic' option is always
-        # available as 'self.emphatic'.
-        for opt in self.MODULE_OPTIONS:
-            pass
-
-    def _configure_headers(self) -> None:
-        id_data = {'private_key': b'', 'api_key': b''}
-        try:
-            id_data = get_settings()
-            self.health_checks = {}
-        except Exception as ex:
-            self.log.error('Error getting encrypted identification keys: %s. '
-                           'Provide keys and restart Ceph Call Home module', ex)
-            self.health_checks.update({
-                'CCHA_ID_KEYS_NOT_AVAILABLE': {
-                    'severity': 'error',
-                    'summary': 'Ceph Call Home Agent manager module: The private identification keys needed to connect '
-                               'with storage insights system are not available',
-                    'detail': ['Provide the right keys and restart the Ceph Call Home manager module']
-                }
-            })
-        self.set_health_checks(self.health_checks)
-
-        cluster_config = self.get('config')
-        reports_header['private_key'] = id_data['private_key'].decode('utf-8')  # type: ignore
-        reports_header['api_key'] = id_data['api_key'].decode('utf-8')  # type: ignore
-        reports_header['asset_id'] = cluster_config['fsid']
-        reports_header['asset_virtual_id'] =  cluster_config['fsid']
-        reports_header['country_code'] = self.get_module_option('country_code')
-        reports_header['analytics_instance'] = cluster_config['fsid']
-        reports_header['analytics_virtual_id'] = cluster_config['fsid']
-
-    def alert_worker(self, alerts: str) -> None:
-        """
-            TODO:
-            send the alerts to the ches alert endpoint
-        """
-
-    @CLIReadCommand('callhome print report')
-    def print_report_cmd(self, report_name: str) -> Tuple[int, str, str]:
+    @CLIReadCommand('callhome show')
+    def print_report_cmd(self, report_type: str) -> Tuple[int, str, str]:
         """
             Prints the report requested.
             Example:
-                ceph callhome print report inventory
-            Available reports: inventory
+                ceph callhome show inventory
         """
-        return HandleCommandResult(stdout=f'report:, {self.reports[report_name].print()}')
+        return HandleCommandResult(stdout=f'report: {self.reports[report_type]}')
 
-    @CLIReadCommand('callhome send report')
-    def send_report_cmd(self, report_name: str) -> Tuple[int, str, str]:
+    @CLIReadCommand('callhome send')
+    def send_report_cmd(self, report_type: str) -> Tuple[int, str, str]:
         """
             Command for sending the report requested.
+            Example:
+                ceph callhome send inventory
         """
-        send_error = self.reports[report_name].send()
-        if send_error:
-            return HandleCommandResult(stdout=send_error)
+        try:
+            self.reports[report_type].send(force=True)
+        except Exception as ex:
+            return HandleCommandResult(stderr=str(ex))
         else:
-            return HandleCommandResult(stdout=f'{report_name} report successfully sent')
+            return HandleCommandResult(stdout=f'{report_type} report sent successfully')
 
-    # Temporal Data collectors (they will be imported from a manager scope module library)
-    def ccha_web_server(self) -> None:
-        """
-            TODO:
-            - configure https web server
-            - Initialize route endpoints.
-                In first phase we will have only the alert receiver for processing alert manager notifications
-                - https://<mgr_host>:<port>/ccha_receiver
-                  it calls ccha.alertWorker
-            - start web server
-        """
 

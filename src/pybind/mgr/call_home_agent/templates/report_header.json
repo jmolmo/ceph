@@ -1,0 +1,29 @@
+{
+    "agent": "RedHat_Marine_firmware_agent",
+    "api_key": "{{ header.api_key }}",
+    "private_key": "{{ header.private_key }}",
+    "target_space": "{{ header.target_space }}",
+    "asset": "ceph",
+    "asset_id": "{{ header.ceph_cluster_id }}",
+    "asset_type": "RedHatMarine",
+    "asset_vendor": "IBM",
+    "asset_virtual_id": "{{ header.ceph_cluster_id }}",
+    "country_code": "{{ header.country_code }}",
+    "event_id": "IBM_chc_event_RedHatMarine_ceph_{{ header.ceph_cluster_id }}_{{ header.report_type }}_report_{{ header.event_time_ms }}",
+    "event_time": "{{ header.event_time }}",
+    "event_time_ms": {{ header.event_time_ms }},
+    "local_event_time": "{{ header.local_event_time }}",
+    "software_level": {
+        "name": "ceph_software",
+        "vrmf": "{{ header.ceph_cluster_version}}"
+    },
+    "type": "eccnext_apisv1s",
+    "version": "1.0.0.1",
+    "analytics_event_source_type": "asset_event",
+    "analytics_type": "ceph",
+    "analytics_instance": " {{ header.ceph_cluster_id }} ",
+    "analytics_virtual_id": " {{ header.ceph_cluster_id }} ",
+    "analytics_group": "Storage",
+    "analytics_category": "RedHatMarine",
+    "events": []
+}

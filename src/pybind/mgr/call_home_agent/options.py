@@ -1,5 +1,6 @@
-# Configurable options for IBM Ceph Call Home Agent
+# Configurable options for Ceph Call Home Agent
 
-CHES_ENDPOINT = ""
-INTERVAL_INVENTORY_REPORT_MINUTES = 1440
-INTERVAL_PERFORMANCE_REPORT_MINUTES = 5
+CHES_ENDPOINT = "http://localhost:8080/reports"
+INTERVAL_INVENTORY_REPORT_SECONDS = 24 * 60 *60
+INTERVAL_PERFORMANCE_REPORT_SECONDS = 5 *60
+
