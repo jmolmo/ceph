@@ -49,6 +49,10 @@ import { SubmitButtonComponent } from './submit-button/submit-button.component';
 import { TelemetryNotificationComponent } from './telemetry-notification/telemetry-notification.component';
 import { UsageBarComponent } from './usage-bar/usage-bar.component';
 import { WizardComponent } from './wizard/wizard.component';
+import { CallHomeModalComponent } from '~/app/shared/components/call-home-modal/call-home-modal.component';
+import { CallHomeNotificationComponent } from './call-home-notification/call-home-notification.component';
+import { StorageInsightsModalComponent } from './storage-insights-modal/storage-insights-modal.component';
+import { StorageInsightsNotificationComponent } from './storage-insights-notification/storage-insights-notification.component';
 
 @NgModule({
   imports: [
@@ -101,7 +105,11 @@ import { WizardComponent } from './wizard/wizard.component';
     WizardComponent,
     CustomLoginBannerComponent,
     CdLabelComponent,
-    ColorClassFromTextPipe
+    ColorClassFromTextPipe,
+    CallHomeModalComponent,
+    CallHomeNotificationComponent,
+    StorageInsightsModalComponent,
+    StorageInsightsNotificationComponent
   ],
   providers: [],
   exports: [
@@ -131,7 +139,10 @@ import { WizardComponent } from './wizard/wizard.component';
     MotdComponent,
     WizardComponent,
     CustomLoginBannerComponent,
-    CdLabelComponent
+    CdLabelComponent,
+    CallHomeModalComponent,
+    CallHomeNotificationComponent,
+    StorageInsightsNotificationComponent
   ]
 })
 export class ComponentsModule {}
