@@ -43,7 +43,7 @@ export class NavigationComponent implements OnInit, OnDestroy {
   };
   private subs = new Subscription();
 
-  evironment = environment;
+  environment = environment;
 
   constructor(
     private authStorageService: AuthStorageService,
