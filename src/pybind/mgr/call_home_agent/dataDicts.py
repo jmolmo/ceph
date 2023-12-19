@@ -121,6 +121,19 @@ class ReportEvent:
             event_data["body"]["state"] =  "{}".format(content['status']['health']['status']),
             event_data["body"]["complete"] = True,
 
+            """<NEW>
+            event_data["body"]["state"] and event_data["body"]["complete"] must be updated according:
+            upload_diag[0] = {"pmr": "1234567" , "level": 1, "status": "new|in_progress|error|ok", "percentage": "10|20...."}
+
+            depending of the "status" we will update progress.
+            status = new         -->  state="0% complete"  complete=false
+            status = in_progress --> state = percentage complete = false
+            status = error ---> state= "error with brief xplanation" complete =true
+            status = ok -----> state=" 100% complete" complete = true
+
+            If status is "ok" or  "error" we will delete the item 0 in the upload_diag vector
+            """
+
             if tenant_id:
                 event_data["header"]["tenant_id"] = "{}".format(tenant_id)
 

@@ -18,6 +18,11 @@ from mgr_module import (Option, CLIReadCommand, CLIWriteCommand, MgrModule,
 # from .dataClasses import ReportHeader, ReportEvent
 from .dataDicts import ReportHeader, ReportEvent
 
+# <NEW> This array store upload diag tasks
+# <pmr> and <level> comes from the SI request, but the rest of fields are filled by
+# the call home agent
+upload_diag = [{"pmr": "1234567" , "level": 1, "status": "new|in_progress|error|ok", "percentage": "10|20...."}]
+
 class SendError(Exception):
     pass
 
@@ -162,7 +167,8 @@ class Report:
                                  data=str(self),
                                  proxies=self.proxies)
             resp.raise_for_status()
-            self.mgr.log.info(resp.json())
+            # self.mgr.log.info(resp.json()) <--- remove ... too much info in the log for nothing ..
+            self.manage_response(resp) # <NEW>
             self.last_upload = str(int(time.time()))
             self.mgr.set_store(self.last_upload_option_name, self.last_upload)
             self.mgr.health_checks.pop('CHA_ERROR_SENDING_REPORT', None)
@@ -171,6 +177,32 @@ class Report:
         except Exception as e:
             explanation = resp.text if resp else ""
             raise SendError('Failed to send <%s> to <%s>: %s %s' % (self.report_type, self.url, str(e), explanation))
+
+    def manage_response(resp: any) -> None:
+        """ <NEW>
+        In last_contact reports response we need to take a look to the body and
+        create and create a "upload_diag_items" element:
+
+        "body": {
+            "event_type": "product_request",
+            "inbound_requests": [
+              {
+                "operation": "upload_snap",
+                "options": {
+                  "pmr": "TS1234567",
+                  "level": "3",
+                  "enable_status": "true",
+                  "version": 1
+                }
+
+        the upload_diag task will process the new "item" asynchronously
+
+        We need to manage properly the "upload_diag_items" to avoid to introduce
+          duplicates (same pmr)
+
+        """
+
+        pass
 
 class CallHomeAgent(MgrModule):
     MODULE_OPTIONS: List[Option] = [
@@ -316,7 +348,12 @@ class CallHomeAgent(MgrModule):
             default=r'^.+\.icr\.io$',
             desc='Container registry pattern for urls where cephadm credentials(JWT token) are valid'
         ),
-
+        Option(
+            name='remote_diagnotics_repo',
+            type='str',
+            default=r'https://www.secure.ecurep.ibm.com',
+            desc='Remote repository where upload diagnostics'
+        ),
     ]
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -459,6 +496,45 @@ class CallHomeAgent(MgrModule):
         except asyncio.CancelledError:
             return
 
+    async def upload_diagnostics_task(self) -> None:
+        """ <NEW>
+        - Get first item with status "new" from upload_diag_items and update status to "in_progress"
+            {"pmr": "1234567" , "level": 1, "status": "in_progress", "percentage": "0"}
+
+        - Collect diags from commands:
+            - Generate a file "commands.tar.gz" in host "/var/tmp" folder
+            Note: we need to add the host folder "/var/tmp" to the bind folders in the manager container!!
+                  '/var/tmp' is used by sos reports to store files.
+
+        - if level 2 requested:
+            - Select the "best" node where the diags must be collected
+               a. admin + active mgr + mon
+               b. active mgr + mon
+               c. mon
+
+            - launch cephadm sos report command using cephadm
+            - for now the sos report command is always launched in the node where call home manager module runs.
+              The sos command is:
+                sos report --batch -z gzip
+              - wait until "sha sum" file for the sos report will be available in /var/tmp.
+
+
+        - if level 2 requested. Merge:
+          # cat commands.tar.gz sosreport-blahblah.tar.gz > node_<hostname>_diags.tar.gz
+          if level 1 requested. Rename:
+          # mv commands.tar.gz node_<hostname>_diags.tar.gz
+
+        - Split the diags file in 10 parts:
+        # split -b $(($(du -b node_<hostname>_diags.tar.gz | cut -f1)/10)) node_<hostname>_diags.tar.gz node_<hostname>_diag_part_
+
+        - Start to send all the diags parts to the "remote_diagnotics_repo" url and update "upload_diag_items" properly:
+            {"pmr": "1234567" , "level": 1, "status": "in_progress", "percentage": "10"}
+            ...
+            {"pmr": "1234567" , "level": 1, "status": "in_progress", "percentage": "20"}
+            ...
+        """
+        pass
+
     def launch_coroutines(self) -> None:
         """
          Launch module coroutines (reports or any other async task)
@@ -469,6 +545,9 @@ class CallHomeAgent(MgrModule):
                 self.tasks.append(t)
             # Create control task to allow to reconfigure reports in 10 seconds
             t = self.loop.create_task(self.control_task(10))
+            self.tasks.append(t)
+            # <NEW> Diagnostic uploads are managed by an especific coroutine
+            t = self.loop.create_task(self.upload_diagnostics_task(300))
             self.tasks.append(t)
             # run the async loop
             self.loop.run_forever()
