@@ -207,7 +207,6 @@ class ReportEvent():
                     "description": "".format(description),
                     "payload": {
                         "request_time": event_time_ms,
-                        "content": content,
                         "ibm_customer_number": icn,
                         "product_id_list" : [
                             ['5900-AVA', 'D0CYVZX'],
@@ -225,6 +224,12 @@ class ReportEvent():
                     }
                 }
             }
+
+        # The perfo report is special because elastic and kafka reqs (IBM)
+        if event_type == 'performance':
+            event_data["body"]["payload"]["perfstats"] = content["perfstats"]
+        else:
+            event_data["body"]["payload"]["content"] = content
 
         if event_type == 'inventory':
             if tenant_id:
